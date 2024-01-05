@@ -185,6 +185,7 @@ import org.betonquest.betonquest.objectives.EntityInteractObjective;
 import org.betonquest.betonquest.objectives.EquipItemObjective;
 import org.betonquest.betonquest.objectives.ExperienceObjective;
 import org.betonquest.betonquest.objectives.FishObjective;
+import org.betonquest.betonquest.objectives.FolderObjective;
 import org.betonquest.betonquest.objectives.JumpObjective;
 import org.betonquest.betonquest.objectives.KillPlayerObjective;
 import org.betonquest.betonquest.objectives.LocationObjective;
@@ -1002,6 +1003,7 @@ public class BetonQuest extends JavaPlugin {
         registerObjectives("respawn", RespawnObjective.class);
         registerObjectives("breed", BreedObjective.class);
         registerObjectives("command", CommandObjective.class);
+        registerObjectives("folder", FolderObjective.class);
         if (PaperLib.isPaper()) {
             registerObjectives("jump", JumpObjective.class);
             registerObjectives("equip", EquipItemObjective.class);

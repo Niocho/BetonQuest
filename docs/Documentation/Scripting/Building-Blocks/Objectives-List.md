@@ -630,3 +630,35 @@ by what players type in chat which is only useful when you're also using the `va
     ```YAML
     variable
     ```
+
+## Folder: `folder`
+
+This objective can executes multiple events by order. The main difference between objective `folder` and event `folder`
+is how it handles the player when they come to offline.
+This objective will record which event is going to be executed when player quits. When player rejoins the server,
+it will execute the events starting at the recorded event. Every single event in this objectives will be executed only when the player is online.
+
+It is designed to executing some critical events with intervals. For example, you may want to send some messages to player using notify io with intervals.
+And it is expected these messages to be seen accurately once to your players even if they went offline at the middle of execution and then execute some give item commands that 
+can only be executed while player is online.
+
+!!! example
+    ```YAML
+    folder interval:20 delay:0 period:3 events:event1,event2,event3
+    ```
+
+| Parameter  | Syntax              | Default Value | Explanation                                                                                                      |
+|------------|---------------------|---------------|------------------------------------------------------------------------------------------------------------------|
+| _interval_ | Number              | 20            | The interval between two checks. Shorter interval means more accurate. (the unit is ticks and cannot be changed) |
+| _delay_    | Number              | 0             | The wait time before the first execution of the events. (the default unit is second)                             |
+| _period_   | Number              | 2             | The wait time between two events. (the default unit is second)                                                   |
+| _ticks_    | Keyword (`ticks`)   | Disabled      | Using ticks as the unit for delay and period                                                                     |
+| _minutes_  | Keyword (`minutes`) | Disabled      | Using minutes as the unit for delay and period                                                                   |
+
+<h5> Variable Properties </h5> 
+
+| Name       | Example Output | Explanation                                                                                                   |
+|------------|----------------|---------------------------------------------------------------------------------------------------------------|
+| _current_  | main.event1    | the player's next event will be executed.                                                                     |
+| _lastexec_ | 1704403151000  | the last event's execution time. If no event is executed yet, it will return the objective's activation time. |
+
