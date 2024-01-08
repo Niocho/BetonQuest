@@ -87,6 +87,9 @@ public class DelayObjective extends Objective {
                 final LinkedList<Profile> players = new LinkedList<>();
                 final long time = new Date().getTime();
                 for (final Entry<Profile, ObjectiveData> entry : dataMap.entrySet()) {
+                    if (entry.getKey().getOnlineProfile().isEmpty()) {
+                        continue;
+                    }
                     final Profile profile = entry.getKey();
                     final DelayData playerData = (DelayData) entry.getValue();
                     if (time >= playerData.getTime() && checkConditions(profile)) {
