@@ -1,6 +1,7 @@
 package org.betonquest.betonquest.compatibility.placeholderapi;
 
 import me.clip.placeholderapi.PlaceholderAPI;
+import org.betonquest.betonquest.BetonQuest;
 import org.betonquest.betonquest.Instruction;
 import org.betonquest.betonquest.api.Variable;
 import org.betonquest.betonquest.api.profiles.Profile;
@@ -18,7 +19,11 @@ public class PlaceholderVariable extends Variable {
 
     @Override
     public String getValue(final Profile profile) {
-        return PlaceholderAPI.setPlaceholders(profile.getOnlineProfile().get().getPlayer(), '%' + placeholder + '%');
+        final var playerOpt = profile.getOnlineProfile();
+        return playerOpt.map(onlineProfile -> PlaceholderAPI.setPlaceholders(onlineProfile.getPlayer(), '%' + placeholder + '%'))
+                .orElseGet(() -> {
+                    BetonQuest.getInstance().getLogger().warning("[S] Parsing offline: " + placeholder);
+                    return PlaceholderAPI.setPlaceholders(profile.getPlayer(), '%' + placeholder + '%');
+                });
     }
-
 }
