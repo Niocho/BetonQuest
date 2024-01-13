@@ -7,23 +7,33 @@ import org.betonquest.betonquest.api.QuestEvent;
 import org.betonquest.betonquest.api.logger.BetonQuestLogger;
 import org.betonquest.betonquest.api.profiles.Profile;
 import org.betonquest.betonquest.exceptions.InstructionParseException;
+import org.betonquest.betonquest.exceptions.ObjectNotFoundException;
 import org.betonquest.betonquest.exceptions.QuestRuntimeException;
 import org.betonquest.betonquest.id.EventID;
+import org.betonquest.betonquest.utils.PlayerConverter;
+import org.bukkit.Bukkit;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.Listener;
+import org.bukkit.event.player.PlayerJoinEvent;
 import org.bukkit.event.player.PlayerQuitEvent;
 import org.bukkit.scheduler.BukkitRunnable;
+import org.jetbrains.annotations.NotNull;
+import org.jetbrains.annotations.Nullable;
 
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Deque;
 import java.util.LinkedList;
+import java.util.Locale;
+import java.util.Map;
 import java.util.Random;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * Folder event is a collection of other events, that can be run after a delay and the events can be randomly chosen to
  * run or not.
  */
+@SuppressWarnings("PMD.GodClass")
 public class FolderEvent extends QuestEvent {
     /**
      * Custom {@link BetonQuestLogger} instance for this class.
@@ -66,9 +76,9 @@ public class FolderEvent extends QuestEvent {
     private final boolean minutes;
 
     /**
-     * Whether the event should be cancelled on logout.
+     * The execution mode of this folder event
      */
-    private final boolean cancelOnLogout;
+    private final ExecutionMode executionMode;
 
     /**
      * The constructor called by BetonQuest via reflection.
@@ -86,7 +96,42 @@ public class FolderEvent extends QuestEvent {
         random = instruction.getVarNum(instruction.getOptional("random"));
         ticks = instruction.hasArgument("ticks");
         minutes = instruction.hasArgument("minutes");
-        cancelOnLogout = instruction.hasArgument("cancelOnLogout");
+        executionMode = ExecutionMode.parse(instruction.getOptional("executionMode", "default"));
+        JoinListener.register(new JoinListener());
+    }
+
+    /**
+     * The mode of the folder event
+     */
+    private enum ExecutionMode {
+        /**
+         * The default execution mode of folder
+         */
+        DEFAULT,
+        /**
+         * If the player quits during execution, the event is cancelled
+         */
+        CANCEL_ON_LOGOUT,
+        /**
+         * Will ensure every single event be executed during the player's online time
+         */
+        ENSURE_EXECUTION;
+
+        public static ExecutionMode parse(@NotNull final String mode) throws InstructionParseException {
+            switch (mode.toLowerCase(Locale.ROOT)) {
+                case "default" -> {
+                    return DEFAULT;
+                }
+                case "cancelonlogout" -> {
+                    return CANCEL_ON_LOGOUT;
+                }
+                case "ensureexecution" -> {
+                    return ENSURE_EXECUTION;
+                }
+                default ->
+                        throw new InstructionParseException("There is no such " + ExecutionMode.class.getSimpleName() + ": " + mode);
+            }
+        }
     }
 
     @SuppressWarnings({"PMD.CyclomaticComplexity", "PMD.NPathComplexity", "PMD.CognitiveComplexity"})
@@ -117,18 +162,20 @@ public class FolderEvent extends QuestEvent {
             }
         } else if (execPeriod == null) {
             final FolderEventCanceller eventCanceller = createFolderEventCanceller(profile);
-            new BukkitRunnable() {
-                @Override
-                public void run() {
-                    eventCanceller.destroy();
-                    if (eventCanceller.isCancelled()) {
-                        return;
+            if (!usingEnsureMode(profile)) {
+                new BukkitRunnable() {
+                    @Override
+                    public void run() {
+                        eventCanceller.destroy();
+                        if (eventCanceller.isCancelled()) {
+                            return;
+                        }
+                        for (final EventID event : chosenList) {
+                            BetonQuest.event(profile, event);
+                        }
                     }
-                    for (final EventID event : chosenList) {
-                        BetonQuest.event(profile, event);
-                    }
-                }
-            }.runTaskLater(BetonQuest.getInstance(), execDelay);
+                }.runTaskLater(BetonQuest.getInstance(), execDelay);
+            }
         } else {
             if (execDelay == null && !chosenList.isEmpty()) {
                 final EventID event = chosenList.removeFirst();
@@ -136,25 +183,104 @@ public class FolderEvent extends QuestEvent {
             }
             if (!chosenList.isEmpty()) {
                 final FolderEventCanceller eventCanceller = createFolderEventCanceller(profile);
-                new BukkitRunnable() {
-                    @Override
-                    public void run() {
-                        final EventID event = chosenList.pollFirst();
-                        if (eventCanceller.isCancelled() || event == null) {
-                            eventCanceller.destroy();
-                            this.cancel();
-                            return;
+                if (!usingEnsureMode(profile)) {
+                    new BukkitRunnable() {
+                        @Override
+                        public void run() {
+                            final EventID event = chosenList.pollFirst();
+                            if (eventCanceller.isCancelled() || event == null) {
+                                eventCanceller.destroy();
+                                this.cancel();
+                                return;
+                            }
+                            BetonQuest.event(profile, event);
                         }
-                        BetonQuest.event(profile, event);
-                    }
-                }.runTaskTimer(BetonQuest.getInstance(), execDelay == null ? execPeriod : execDelay, execPeriod);
+                    }.runTaskTimer(BetonQuest.getInstance(), execDelay == null ? execPeriod : execDelay, execPeriod);
+                }
             }
         }
         return null;
     }
 
+    private boolean usingEnsureMode(@NotNull final Profile profile) {
+        final Long execDelay = getInTicks(delay, profile);
+        final Long execPeriod = getInTicks(period, profile);
+        if (executionMode == ExecutionMode.ENSURE_EXECUTION) {
+            setNextEvent(profile, events[0]);
+            new BukkitRunnable() {
+                @Override
+                public void run() {
+                    ensureExecute(profile);
+                }
+            }.runTaskLater(BetonQuest.getInstance(), execDelay == null ? execPeriod : execDelay);
+            return true;
+        }
+
+        return false;
+    }
+
+    /**
+     * this function is used to safely execute player's events
+     *
+     * @param profile the player's profile
+     */
+    @SuppressWarnings("PMD.CognitiveComplexity")
+    protected void ensureExecute(final Profile profile) {
+        final var nextEvent = getNextEvent(profile);
+        if (nextEvent == null) {
+            return;
+        }
+        if (profile.getOnlineProfile().isEmpty()) {
+            return;
+        }
+
+        final Long execPeriod = getInTicks(period, profile);
+        if (execPeriod == null) {
+            var start = false;
+            if (profile.getPlayer().isOnline() && profile.getOnlineProfile().isPresent()) {
+                final var onlineProfile = profile.getOnlineProfile().get();
+                for (final EventID event : events) {
+                    if (event.equals(nextEvent)) {
+                        start = true;
+                        BetonQuest.event(onlineProfile, event);
+                        moveToNextEvent(onlineProfile, event);
+                        continue;
+                    }
+
+                    if (start) {
+                        BetonQuest.event(onlineProfile, event);
+                        moveToNextEvent(onlineProfile, event);
+                    }
+                }
+            }
+        } else {
+            new BukkitRunnable() {
+                @Override
+                public void run() {
+                    if (profile.getPlayer().isOnline() && profile.getOnlineProfile().isPresent()) {
+                        final var onlineProfile = profile.getOnlineProfile().get();
+                        final var eventToExecuted = getNextEvent(profile);
+                        if (eventToExecuted != null) {
+                            for (final EventID event : events) {
+                                if (event.equals(eventToExecuted)) {
+                                    BetonQuest.event(onlineProfile, eventToExecuted);
+                                    moveToNextEvent(onlineProfile, eventToExecuted);
+                                    break;
+                                }
+                            }
+                        } else {
+                            this.cancel();
+                        }
+                    } else {
+                        this.cancel();
+                    }
+                }
+            }.runTaskTimer(BetonQuest.getInstance(), 0, execPeriod);
+        }
+    }
+
     private FolderEventCanceller createFolderEventCanceller(final Profile profile) {
-        if (cancelOnLogout) {
+        if (executionMode == ExecutionMode.CANCEL_ON_LOGOUT) {
             return new QuitListener(log, profile);
         } else {
             return () -> false;
@@ -177,6 +303,61 @@ public class FolderEvent extends QuestEvent {
             time *= 20;
         }
         return time;
+    }
+
+    @Nullable
+    private EventID getNextEvent(@NotNull final Profile profile) {
+        final var fullId = getFullId();
+        for (final String tag : BetonQuest.getInstance().getPlayerData(profile).getTags()) {
+            if (tag.startsWith(fullId)) {
+                final var eventMark = tag.substring(fullId.length());
+                if (eventMark.contains("#") && eventMark.contains("ensuredata")) {
+                    final var data = Arrays.stream(eventMark.split("#")).filter((it) -> !it.isBlank())
+                            .toList();
+                    try {
+                        return new EventID(null, data.get(0));
+                    } catch (final ObjectNotFoundException e) {
+                        return null;
+                    }
+                } else {
+                    return null;
+                }
+            }
+        }
+        return null;
+    }
+
+    private void setNextEvent(@NotNull final Profile profile, final EventID eventID) {
+        final var fullId = getFullId();
+        final var playerData = BetonQuest.getInstance().getPlayerData(profile);
+        playerData.addTag(fullId + "#" + eventID + "#ensuredata");
+    }
+
+    private void removeNextEvent(@NotNull final Profile profile, final EventID eventToBeRemoved) {
+        final var playerData = BetonQuest.getInstance().getPlayerData(profile);
+        for (final String tag : playerData.getTags()) {
+            if (tag.startsWith(this.getFullId() + "#" + eventToBeRemoved.toString())) {
+                playerData.removeTag(tag);
+            }
+        }
+    }
+
+    private void moveToNextEvent(@NotNull final Profile profile, final EventID currentEvent) {
+        var found = false;
+        for (final EventID event : events) {
+            if (found) {
+                removeNextEvent(profile, currentEvent);
+                setNextEvent(profile, event);
+                return;
+            }
+            if (event.equals(currentEvent)) {
+                found = true;
+            }
+        }
+
+        if (found) {
+            removeNextEvent(profile, currentEvent);
+        }
     }
 
     /**
@@ -250,6 +431,67 @@ public class FolderEvent extends QuestEvent {
         @Override
         public void destroy() {
             PlayerQuitEvent.getHandlerList().unregister(this);
+        }
+    }
+
+    /**
+     * This listener listen to player join events
+     * to continue any events that player has not executed.
+     * In order to unregister this event in time, each time
+     * this listener executed, it will check if the event itself is removed.
+     * If so, the listener will also unregister itself.
+     */
+    private class JoinListener implements Listener {
+        /**
+         * Avoid to register two save listeners for one folder event
+         */
+        private static final Map<String, JoinListener> REGISTERED = new ConcurrentHashMap<>();
+
+        private static void register(final JoinListener listener) {
+            REGISTERED.compute(listener.getEventId(), (k, currentListener) -> {
+                if (currentListener != null) {
+                    PlayerJoinEvent.getHandlerList().unregister(currentListener);
+                }
+                Bukkit.getServer().getPluginManager().registerEvents(
+                        listener,
+                        BetonQuest.getInstance()
+                );
+                return listener;
+            });
+        }
+
+        /**
+         * Create the join listener
+         */
+        public JoinListener() {
+        }
+
+        /**
+         * The event id the listener's parent folder event holds
+         *
+         * @return the event id
+         */
+        public String getEventId() {
+            return FolderEvent.this.getFullId();
+        }
+
+        /**
+         * Called when player join, will trigger the execution
+         * of events that haven't been finished yet.
+         *
+         * @param event the event
+         */
+        @EventHandler
+        public void onPlayerJoin(final PlayerJoinEvent event) {
+            try {
+                new EventID(null, getFullId());
+            } catch (final ObjectNotFoundException e) {
+                PlayerJoinEvent.getHandlerList().unregister(this);
+                REGISTERED.remove(getFullId());
+                return;
+            }
+            final var profile = PlayerConverter.getID(event.getPlayer());
+            ensureExecute(profile);
         }
     }
 }
